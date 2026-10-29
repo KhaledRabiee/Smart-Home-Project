@@ -1,0 +1,165 @@
+#include <DHT.h>
+
+// ---------- Pins ----------
+#define DHT_PIN     2
+#define IR_PIN      3
+#define RED_LED     4
+#define YELLOW_LED  5
+#define WHITE_LED   6
+#define MOTOR_EN    7
+#define BUZZER      8
+#define TRIG_PIN    9
+#define ECHO_PIN    10
+#define MOTOR_IN1   12
+#define MOTOR_IN2   13
+#define POT_PIN     A0
+#define LDR_PIN     A1
+#define SW_LIGHT    A2
+#define SW_MOTOR    A3
+
+// ---------- Settings ----------
+#define DHT_TYPE          DHT11
+#define DISTANCE_LIMIT_CM 20      // ultrasonic trigger distance
+#define LDR_THRESHOLD     800     // 0-1023, tune using the Serial Monitor
+#define LDR_DARK_IS_HIGH  true    // true if the AO value INCREASES in the dark
+                                  // (change to false if your module is opposite)
+#define TEMP_MIN          20.0    // pot fully left  = 20 C
+#define TEMP_MAX          40.0    // pot fully right = 40 C
+#define TEMP_HYSTERESIS   0.5     // avoids motor flicker around the threshold
+#define IR_HOLD_MS        3000    // siren stays on this long after last detection
+
+DHT dht(DHT_PIN, DHT_TYPE);
+
+float temperature = 0;
+float humidity = 0;
+float tempLimit = 28;
+bool  motorAuto = false;
+
+unsigned long lastDht = 0, lastUltra = 0, lastPrint = 0;
+unsigned long irLastSeen = 0;
+bool sirenActive = false;
+
+// siren sweep state
+int sirenFreq = 600;
+int sirenDir = 10;
+unsigned long lastSirenStep = 0;
+
+void setup() {
+  Serial.begin(9600);
+  dht.begin();
+
+  pinMode(IR_PIN, INPUT);
+  pinMode(RED_LED, OUTPUT);
+  pinMode(YELLOW_LED, OUTPUT);
+  pinMode(WHITE_LED, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(MOTOR_EN, OUTPUT);
+  pinMode(MOTOR_IN1, OUTPUT);
+  pinMode(MOTOR_IN2, OUTPUT);
+  pinMode(SW_LIGHT, INPUT_PULLUP);
+  pinMode(SW_MOTOR, INPUT_PULLUP);
+
+  motorStop();
+  Serial.println(F("Smart Home started"));
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  // ---------- Potentiometer: temperature threshold ----------
+  int potVal = analogRead(POT_PIN);
+  tempLimit = TEMP_MIN + (potVal / 1023.0) * (TEMP_MAX - TEMP_MIN);
+
+  // ---------- 1) IR sensor -> siren + red LED ----------
+  if (digitalRead(IR_PIN) == LOW) {          // most IR modules are active LOW
+    irLastSeen = now;
+    sirenActive = true;
+  }
+  if (sirenActive && (now - irLastSeen > IR_HOLD_MS)) {
+    sirenActive = false;
+  }
+  digitalWrite(RED_LED, sirenActive);
+  updateSiren(now);
+
+  // ---------- 2) Ultrasonic -> yellow LED ----------
+  if (now - lastUltra >= 100) {
+    lastUltra = now;
+    long d = readDistanceCm();
+    digitalWrite(YELLOW_LED, (d > 0 && d < DISTANCE_LIMIT_CM));
+  }
+
+  // ---------- 3) LDR + switch 1 -> white LED ----------
+  int ldr = analogRead(LDR_PIN);
+  bool isDark = LDR_DARK_IS_HIGH ? (ldr > LDR_THRESHOLD) : (ldr < LDR_THRESHOLD);
+  bool lightManual = (digitalRead(SW_LIGHT) == LOW);   // switch ON = manual ON
+  digitalWrite(WHITE_LED, isDark || lightManual);
+
+  // ---------- 4) DHT11 + pot + switch 2 -> motor ----------
+  if (now - lastDht >= 2000) {               // DHT11 needs >= 1 s between reads
+    lastDht = now;
+    float t = dht.readTemperature();
+    float h = dht.readHumidity();
+    if (!isnan(t) && !isnan(h)) {
+      temperature = t;
+      humidity = h;
+    }
+  }
+  if (temperature > tempLimit) motorAuto = true;
+  else if (temperature < tempLimit - TEMP_HYSTERESIS) motorAuto = false;
+
+  bool motorManual = (digitalRead(SW_MOTOR) == LOW);   // switch ON = manual ON
+  if (motorAuto || motorManual) motorRun();
+  else motorStop();
+
+  // ---------- Debug output ----------
+  if (now - lastPrint >= 1000) {
+    lastPrint = now;
+    Serial.print(F("Temp: "));   Serial.print(temperature);
+    Serial.print(F(" C | Hum: ")); Serial.print(humidity);
+    Serial.print(F(" % | Limit: ")); Serial.print(tempLimit);
+    Serial.print(F(" | LDR: "));  Serial.print(ldr);
+    Serial.print(F(" | IR: "));   Serial.print(sirenActive ? "ALARM" : "clear");
+    Serial.print(F(" | Motor: ")); Serial.println((motorAuto || motorManual) ? "ON" : "OFF");
+  }
+}
+
+// ---------- Helpers ----------
+long readDistanceCm() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long duration = pulseIn(ECHO_PIN, HIGH, 25000);   // 25 ms timeout (~4 m)
+  if (duration == 0) return -1;
+  return duration * 0.034 / 2;
+}
+
+void updateSiren(unsigned long now) {
+  if (!sirenActive) {
+    noTone(BUZZER);
+    sirenFreq = 600;
+    sirenDir = 10;
+    return;
+  }
+  if (now - lastSirenStep >= 8) {            // sweep 600 <-> 1200 Hz
+    lastSirenStep = now;
+    sirenFreq += sirenDir;
+    if (sirenFreq >= 1200 || sirenFreq <= 600) sirenDir = -sirenDir;
+    tone(BUZZER, sirenFreq);
+  }
+}
+
+void motorRun() {
+  digitalWrite(MOTOR_IN1, HIGH);
+  digitalWrite(MOTOR_IN2, LOW);
+  digitalWrite(MOTOR_EN, HIGH);
+}
+
+void motorStop() {
+  digitalWrite(MOTOR_EN, LOW);
+  digitalWrite(MOTOR_IN1, LOW);
+  digitalWrite(MOTOR_IN2, LOW);
+}
