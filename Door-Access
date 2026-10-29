@@ -1,0 +1,109 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Keypad.h>
+#include <Servo.h>
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+Servo myServo;
+
+const int SERVO_PIN = 10;
+const int BUZZER_PIN = 11;
+
+// Servo angles (swap these two numbers to change direction)
+const int LOCKED_ANGLE = 90;
+const int UNLOCKED_ANGLE = 0;
+
+const String PASSWORD = "6769";
+String input = "";
+int wrongAttempts = 0;
+
+const byte ROWS = 4;
+const byte COLS = 4;
+
+char keys[ROWS][COLS] = {
+  {'1', '2', '3', 'A'},
+  {'4', '5', '6', 'B'},
+  {'7', '8', '9', 'C'},
+  {'*', '0', '#', 'D'}
+};
+
+byte rowPins[ROWS] = {9, 8, 7, 6};
+byte colPins[COLS] = {5, 4, 3, 2};
+
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+
+void showPrompt() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Enter code:");
+  lcd.setCursor(0, 1);
+  input = "";
+}
+
+void setup() {
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  myServo.attach(SERVO_PIN);
+  myServo.write(LOCKED_ANGLE);   // locked position
+
+  lcd.init();
+  lcd.backlight();
+  showPrompt();
+}
+
+void loop() {
+  char key = keypad.getKey();
+
+  if (!key) return;
+
+  // * clears what you typed
+  if (key == '*') {
+    showPrompt();
+    return;
+  }
+
+  // accept only digits
+  if (key < '0' || key > '9') return;
+
+  input += key;
+  lcd.print('*');              // hide the digits
+
+  // check once 4 digits are entered
+  if (input.length() == 4) {
+    lcd.clear();
+
+    if (input == PASSWORD) {
+      lcd.setCursor(0, 0);
+      lcd.print("Welcome");
+      wrongAttempts = 0;
+
+      myServo.write(UNLOCKED_ANGLE);   // unlock (turns the other way)
+      delay(3000);
+      myServo.write(LOCKED_ANGLE);     // lock again
+      delay(500);
+    }
+    else {
+      wrongAttempts++;
+      lcd.setCursor(0, 0);
+      lcd.print("Not correct");
+      lcd.setCursor(0, 1);
+      lcd.print("Attempt ");
+      lcd.print(wrongAttempts);
+      lcd.print("/3");
+      delay(2000);
+
+      if (wrongAttempts >= 3) {
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Alarm on");
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(10000);            // buzzer runs for 10 seconds
+        digitalWrite(BUZZER_PIN, LOW);
+        wrongAttempts = 0;
+      }
+    }
+
+    showPrompt();
+  }
+}
